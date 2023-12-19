@@ -1,4 +1,4 @@
-function [receiver_position] = compute_receiver_position(data_obs, data_nav, epoch_list)
+function [receiver_position] = compute_receiver_position(data_obs, data_nav, epoch_list, reference_ecef)
 %--------------------------------------------------------------------------
 % Compute the position of the satellites in the given time interval. The
 % algorithm for its computation has been extracted from the book GNSS Data
@@ -8,6 +8,7 @@ function [receiver_position] = compute_receiver_position(data_obs, data_nav, epo
 %               - data_nav: timetable containing the parameters to compute
 %               the satellite positions at a given time.                   
 %               - epoch_list: if given, list of epochs to be computed
+%               - reference_lla: reference receiver position in LLA
 %
 % Output:       - receiver_position (x, y, z, cdt)
 %--------------------------------------------------------------------------
@@ -44,7 +45,12 @@ for t = 1 : length(epoch_list)
 
     % Apply the Iterative Least Squares estimator to obtain the position of
     % our receiver at epoch t
-    [pos(t,:), dop(t,:)] = ilse(ephemeris, pseudoranges, epoch_list(t));
+    [pos(t,:), P_enu] = ilse(ephemeris, pseudoranges, epoch_list(t), reference_ecef);
+
+    % Obtain GDOP, HDOP, VDOP from the covariance matrix
+    dop(t,1) = P_enu(1,1) + P_enu(2,2) + P_enu(3,3);
+    dop(t,2) = P_enu(1,1) + P_enu(2,2);
+    dop(t,3) = P_enu(3,3);
 end
 
 % Define output timetable
