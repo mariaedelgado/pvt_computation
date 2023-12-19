@@ -1,8 +1,7 @@
-function [position, dop] = ilse(ephemeris, pseudoranges, epoch)
+function [position, P_enu] = ilse(ephemeris, pseudoranges, epoch, reference_ecef)
 %--------------------------------------------------------------------------
-% Output:   - ephemeris
-%           - position [x y z cdt] in ECEF
-%           - dop [gdop, hdop, vdop]
+% Output:   - position: receiver position in ECEF frame (x, y, z)
+%           - P_enu: covariance matrix
 %--------------------------------------------------------------------------
 
 % Parameter and vector definition
@@ -21,6 +20,9 @@ H = zeros(number_of_sats, 4);
 
 dop = zeros(1,3);
 
+% Convert reference position to LLA for some of the computations
+reference_lla = ecef2lla(reference_ecef);
+
 while true
 
     % Iterate through the list of satellites
@@ -33,17 +35,28 @@ while true
         sat_clock_offset = compute_satellite_clock_offset(epoch, ephemeris_s);
         [wn, gps_sow_tx] = compute_satellite_transmission_time(epoch, pseudoranges(s), sat_clock_offset);
         [xs, ys, zs, E] = compute_gps_sat_pos(ephemeris_s, wn, gps_sow_tx);
+        [xs, ys, zs] = apply_sagnac_effect_correction(xs, ys, zs, reference_ecef);
 
         % Compute the bias introduced by the satellite clock, including the
         % relativity correction
         relativity_correction = -2*(sqrt(G*sqrt(ephemeris_s.sqrtA))/power(c,2))*ephemeris_s.Eccentricity*sin(E);
         clock_offset_correction = c*(sat_clock_offset + relativity_correction);
 
+        % Compute ionospheric delay. We compute the correction at the true
+        % position of the receiver for simplicity.
+        sat_pos = ecef2lla([xs, ys, zs]);
+        wgs84 = wgs84Ellipsoid;
+        [azimuth, elevation, slant] = geodetic2aer(reference_lla(1), reference_lla(2), reference_lla(3), ...
+                                                   sat_pos(1), sat_pos(2), sat_pos(3), ...
+                                                   wgs84);
+        iono_delay_m = compute_iono_delay(epoch, reference_lla(1), reference_lla(2), elevation, azimuth);
+     
         % Compute h(x0) matrix
         h(s) = sqrt(power(x0(1) - xs, 2) + ...   % (x0-xs)^2
                power(x0(2) - ys, 2) + ...        % (y0-ys)^2
                power(x0(3) - zs, 2)) + ...       % (z0-zs)^2
-               x0(4) - clock_offset_correction;  % c*dt_receiver - c*dt_satellite;
+               x0(4) - clock_offset_correction + ... % c*dt_receiver - c*dt_satellite;
+               iono_delay_m;                     % ionospheric delay in meters
  
         % Compute Jacobian matrix
         H(s,:) = [(x0(1) - xs)/pseudoranges(s), ...
@@ -72,10 +85,15 @@ end
 
 position = x0;
 
-gdop = H_inv(1,1) + H_inv(2,2) + H_inv(3,3);
-hdop = H_inv(1,1) + H_inv(2,2);
-vdop = H_inv(3,3);
-dop = [gdop, hdop, vdop];
+% Additionally, we know that P_ecef = inv(H_T*H) describes the covariance
+% in the ECEF frame. We convert it to the ENU frame to obtain it in the 
+% geodetic frame for statistical means.
+
+P_ecef = H_inv(1:3,1:3);    % We keep the upper part to get a 3x3 matrix
+R_ecef_enu = [-sin(reference_lla(1)) -sin(reference_lla(2))*cos(reference_lla(1)) cos(reference_lla(2))*cos(reference_lla(1));
+               cos(reference_lla(1)) -sin(reference_lla(2))*sin(reference_lla(1)) cos(reference_lla(2))*sin(reference_lla(1));
+                    0                          cos(reference_lla(2))                        sin(reference_lla(2))];
+P_enu = transpose(R_ecef_enu)*P_ecef*R_ecef_enu;
 
 end
 
